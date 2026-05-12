@@ -1,0 +1,121 @@
+services:
+
+  # 1. Mock del IdP (emula Logto / Auth0 / cualquier OIDC)
+  auth-mock:
+    image: navikt/mock-oauth2-server:2.1.0
+    ports:
+      - "9090:8080"
+    environment:
+      JSON_CONFIG: >
+        {
+          "interactiveLogin": true,
+          "httpServer": "NettyWrapper",
+          "tokenCallbacks": [
+            {
+              "issuerId": "auth-provider",
+              "tokenExpiry": 3600,
+              "requestMappings": [
+                {
+                  "requestParam": "client_id",
+                  "match": "login-mock-id",
+                  "claims": {
+                    "sub": "user-123",
+                    "email": "dev@example.com",
+                    "name": "Developer User",
+                    "picture": "https://placekitten.com/200/200"
+                  }
+                },
+                {
+                  "requestParam": "client_id",
+                  "match": "backend-mock-id",
+                  "claims": {
+                    "sub": "user-123",
+                    "email": "dev@example.com",
+                    "aud": "https://api.tu-proyecto.com/eventos"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/auth-provider/.well-known/openid-configuration"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # 2. Redis para sesiones distribuidas
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel notice
+      --requirepass ${REDIS_PASSWORD:-redis-local-secret}
+    volumes:
+      # Persiste datos entre reinicios del compose
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis-local-secret}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+  # 3. BFF
+  ms-bff-server:
+    build: 
+      context: ./ms-bff-server    # <--- Apunta a la subcarpeta del bff
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth-mock:
+        condition: service_healthy
+    environment:
+      # Servidor
+      SERVER_PORT: "8080"
+
+      # IdP Mock
+      AUTH_ISSUER_URI: http://auth-mock:8080/auth-provider
+      AUTH_LOGIN_CLIENT_ID: login-mock-id
+      AUTH_LOGIN_CLIENT_SECRET: login-mock-secret
+      AUTH_BACKEND_CLIENT_ID: backend-mock-id
+      AUTH_BACKEND_CLIENT_SECRET: backend-mock-secret
+
+      # Redis — debe coincidir con la password del servicio redis
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-local-secret}
+
+      # Backend interno (si tienes un servicio backend en el compose,
+      # reemplaza localhost:9090 por el nombre del servicio)
+      BACKEND_BASE_URL: http://localhost:9090
+
+      # App
+      APP_SPA_BASE_URL: http://localhost:5173
+      # En local no usamos HTTPS → secure-cookie false
+      APP_SECURE_COOKIE: "false"
+      # En local el patrón de dominio no hace match con localhost
+      # → la cookie SESSION es host-only → correcto para desarrollo
+      APP_COOKIE_DOMAIN: localhost
+
+      # Spring
+      SPRING_PROFILES_ACTIVE: default
+      
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  redis-data:
+    driver: local

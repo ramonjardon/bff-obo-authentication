@@ -1,0 +1,96 @@
+spring:
+  application:
+    name: ms-bff-server
+  session:
+    # store-type eliminado en Boot 4: se detecta automáticamente
+    # por la presencia de spring-boot-starter-session-data-redis en el classpath
+    timeout: 1800
+    data:
+      redis:
+        namespace: "bff:session"
+        flush-mode: on-save
+        save-mode: ON_SET_ATTRIBUTE
+        repository-type: indexed
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      username: ${REDIS_USER}
+      password: ${REDIS_PASSWORD}
+      ssl:
+        enabled: true
+      # 2s para establecer la conexión TCP+TLS: razonable con Aiven externo
+      connect-timeout: 2s
+      # 1s es demasiado agresivo con TLS + red externa.
+      # Con Aiven desde Railway espera ~5-15ms por comando en condiciones normales,
+      # pero el TLS handshake inicial y picos de red pueden superar 1s.
+      # 2s da margen sin impactar la UX del BFF.
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+          max-wait: 1s
+        shutdown-timeout: 200ms      
+      
+  mvc:
+    async:
+      request-timeout: 10s
+  threads:
+    virtual:
+      enabled: true
+
+  security:
+    oauth2:
+      client:
+        provider:
+          auth-provider:
+            issuer-uri: ${AUTH_ISSUER_URI}
+        registration:
+          oauth:
+            provider: auth-provider
+            client-id: ${CLIENT_ID}
+            client-secret: ${CLIENT_SECRET}
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/oauth"
+            scope:
+              - email
+              - openid
+              - profile
+              - offline_access
+            client-authentication-method: client_secret_basic
+
+
+
+
+server:
+  port: ${SERVER_PORT:8080}
+  tomcat:
+    max-connections: 500
+    accept-count: 100
+    connection-timeout: 10s
+    # Debe ser mayor que el idle timeout de Cloudflare/Railway (~100s)
+    # para evitar que Tomcat cierre la conexión antes que el proxy,
+    # lo que causaría 502 Bad Gateway esporádicos
+    keep-alive-timeout: 110s
+    max-keep-alive-requests: 100
+    threads:
+      min-spare: 2
+      max: 4
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+app:
+  spa-base-url: ${APP_SPA_BASE_URL:http://localhost:5173}
+  logout-url: ${APP_LOGOUT_URL:/api/auth/logout}
+  success-path: ${APP_SUCCESS_PATH:/dashboard}
+  cookie-domain: ${APP_COOKIE_DOMAIN:localhost}
+  secure-cookie: ${APP_SECURE_COOKIE:false}
